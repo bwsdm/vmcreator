@@ -1,11 +1,12 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# Have to encode the username and password
+# Get sessionID and server path
 $vars = Get-Content .\env.json | ConvertFrom-Json
 
 function Get-SessionID {
   $creds = Get-Credential
-  $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($creds.UserName+':'+$creds.GetNetworkCredential().Password))
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes( `
+    $creds.UserName+':'+$creds.GetNetworkCredential().Password))
 
   $params = @{
     Uri         = "$($vars.uriStart)/com/vmware/cis/session"
@@ -13,15 +14,13 @@ function Get-SessionID {
       'Authorization' = "Basic $encoded" 
       }
     Method      = 'POST'
-    #Body        = $jsonSample
     ContentType = 'application/json'
   }
+  $sID = Invoke-RestMethod @params -SkipCertificateCheck
 
-  return Invoke-RestMethod @params -SkipCertificateCheck
-
+  return $sID.Value
 }
 
-#$sessionID = Get-SessionID
 
 $params2 = @{
   Uri = "$($vars.uriStart)/vcenter/vm"
@@ -32,6 +31,22 @@ $params2 = @{
   ContentType = 'application/json'
 }
 
-Write-Output $params2.Headers
+# Need to loop back and try again if failed
+# This naively assumes the only error will be due to session ID issues
+do {
+  
+  $err = $null
 
-Invoke-RestMethod @params2 -SkipCertificateCheck
+  Invoke-RestMethod @params2 -SkipCertificateCheck `
+    -ErrorAction SilentlyContinue -ErrorVariable err
+
+  if($err) {
+    Write-Output "Getting a new session ID"
+    $sessionID = Get-SessionID
+    $vars.SessionID = $sessionID
+    $params2.Headers.Add('vmware-api-session-id', $sessionID)
+    $vars | ConvertTo-Json | Out-File .\env.json
+
+  }
+}
+while($err)
